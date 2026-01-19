@@ -1,0 +1,5 @@
+fastapi
+pydantic
+uvicorn
+numpy
+sentencepiece==0.2.1

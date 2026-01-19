@@ -101,7 +101,9 @@ def main():
         "A woman is cooking food in the kitchen",
         "A dog is running in the park",
         "A cat is sleeping on the sofa",
-        "Children are playing in the playground"
+        "Children are playing in the playground",
+        "Nice to meet you",
+        "Hello world"
     ]
     
     print("\n📝 翻译结果:")

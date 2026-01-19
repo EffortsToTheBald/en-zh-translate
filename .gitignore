@@ -5,8 +5,25 @@ tmp/
 temp/
 
 # data
-data/
+data/*
+logs_new/*
 
-results_new/
-logs_new/
-venv/
+# record
+results_new/*
+
+venv/*
+checkpoints_new/*
+vocab_new/*
+vocab/*
+
+# front end
+frontend/node_modules/*
+
+# back end
+backend/wheel
+backend/wheels
+backend/__pycache__
+# util
+util/*
+
+src/__pycache__

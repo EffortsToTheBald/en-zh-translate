@@ -1,8 +1,10 @@
-"""训练模块"""
+"""
+使用 SentencePiece Tokenizer 的 Transformer 训练脚本
+适用于中英机器翻译任务
+"""
+
 import os
 import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
@@ -11,269 +13,139 @@ import time
 import math
 from datetime import datetime
 
-from config import Config
-from vocabulary import Vocabulary
-from dataset import create_dataloaders
-from model import build_model
-from utils import EarlyStopping, LabelSmoothingLoss
+# 添加项目根目录到路径（便于模块导入）
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
-#     """训练一个epoch"""
-#     model.train()
-#     total_loss = 0
-#     total_tokens = 0
-    
-#     progress_bar = tqdm(dataloader, desc=f"Epoch {epoch} [Train]", leave=False)
-    
-#     for batch_idx, batch in enumerate(progress_bar):
-#         src = batch['src'].to(device)
-#         tgt = batch['tgt'].to(device)
-#         src_mask = batch['src_mask'].to(device)
-#         tgt_mask = batch['tgt_mask'].to(device)
-        
-#         # 准备输入输出
-#         tgt_input = tgt[:, :-1]
-#         tgt_output = tgt[:, 1:]
-        
-#         # 前向传播
-#         optimizer.zero_grad()
-#         output, _ = model(src, tgt_input, src_mask, tgt_mask[:, :, :-1, :-1])
-        
-#         # 计算损失
-#         loss = criterion(
-#             output.contiguous().view(-1, output.size(-1)),
-#             tgt_output.contiguous().view(-1)
-#         )
-        
-#         # 反向传播
-#         loss.backward()
-#         torch.nn.utils.clip_grad_norm_(model.parameters(), Config.CLIP_GRAD)
-#         optimizer.step()
-        
-#         # 统计
-#         batch_tokens = (tgt_output != 0).sum().item()
-#         total_loss += loss.item() * batch_tokens
-#         total_tokens += batch_tokens
-        
-#         # 更新进度条
-#         if batch_idx % 10 == 0:
-#             progress_bar.set_postfix({
-#                 'loss': loss.item(),
-#                 'lr': optimizer.param_groups[0]['lr']
-#             })
-    
-#     return total_loss / total_tokens if total_tokens > 0 else 0
+from src.config import Config
+from src.dataset import create_dataloaders
+from src.model import build_model
+from src.utils import LabelSmoothingLoss, EarlyStopping
 
-# def train_epoch(model, train_loader, criterion, optimizer, device, epoch):
-#     model.train()
-#     total_loss = 0
-    
-#     for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"训练 epoch {epoch}")):
-#         src = batch['src'].to(device)  # [batch_size, src_len]
-#         tgt = batch['tgt'].to(device)  # [batch_size, tgt_len]
-        
-#         # 创建目标输入（去掉最后一个token）
-#         tgt_input = tgt[:, :-1]  # [batch_size, tgt_len-1]
-        
-#         # 创建填充掩码（2D张量）
-#         src_padding_mask = (src == 0)  # [batch_size, src_len]
-#         tgt_padding_mask = (tgt_input == 0)  # [batch_size, tgt_len-1]
-        
-#         # 创建因果掩码（防止看到未来信息）
-#         tgt_mask = generate_square_subsequent_mask(tgt_input.size(1)).to(device)  # [tgt_len-1, tgt_len-1]
-        
-#         # 调用模型
-#         output, _ = model(
-#             src=src,
-#             tgt=tgt_input,
-#             tgt_mask=tgt_mask,
-#             src_padding_mask=src_padding_mask,
-#             tgt_padding_mask=tgt_padding_mask
-#         )
-        
-#         # 计算损失
-#         # output shape: [batch_size, tgt_len-1, vocab_size]
-#         # target shape: [batch_size, tgt_len-1]
-#         target = tgt[:, 1:]  # 去掉第一个token（<sos>）
-        
-#         output_flat = output.reshape(-1, output.size(-1))
-#         target_flat = target.reshape(-1)
-        
-#         loss = criterion(output_flat, target_flat)
-        
-#         optimizer.zero_grad()
-#         loss.backward()
-#         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-#         optimizer.step()
-        
-#         total_loss += loss.item()
-        
-#         # 可选：每N个批次打印一次损失
-#         if batch_idx % 100 == 0:
-#             print(f"批次 {batch_idx}, 损失: {loss.item():.4f}")
-    
-#     return total_loss / len(train_loader)
+def get_transformer_lr(step: int, d_model: int, warmup_steps: int, max_lr: float = 0.0005):
+    """原论文学习率公式"""
+    if step == 0:
+        return 1e-8
+    lr = (d_model ** -0.5) * min(step ** -0.5, step * (warmup_steps ** -1.5))
+    return min(lr, max_lr)
 
-def train_epoch(model, train_loader, criterion, optimizer, device, epoch, pad_idx):
+def generate_square_subsequent_mask(sz):
+    """生成 decoder 所需的下三角 mask，防止看到未来词"""
+    mask = torch.triu(torch.full((sz, sz), float('-inf')), diagonal=1)
+    return mask
+
+def train_epoch(model, train_loader, criterion, optimizer, device, epoch, pad_idx,global_step):
     model.train()
-    total_loss = 0
-    total_tokens = 0  # 新增
-    
-    for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"训练 epoch {epoch}")):
+    total_loss = 0.0
+    total_tokens = 0
+
+    for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch} Training")):
+        # 先更新学习率，再执行训练步骤（修复时机问题）
+        lr = get_transformer_lr(
+            step=global_step,
+            d_model=Config.D_MODEL,
+            warmup_steps=Config.WARMUP_STEPS,
+            max_lr=Config.MAX_LR
+        )
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+        
+        if global_step % 480 == 0:
+            theoretical_lr = get_transformer_lr(global_step, Config.D_MODEL, Config.WARMUP_STEPS)
+            actual_lr = optimizer.param_groups[0]['lr']
+            print(f"  [DEBUG] Step {global_step}: theoretical={theoretical_lr:.6f}, actual={actual_lr:.6f}")
+
         src = batch['src'].to(device)
         tgt = batch['tgt'].to(device)
-        
+
         tgt_input = tgt[:, :-1]
-        target = tgt[:, 1:]
-        
-        src_padding_mask = (src == 0)
-        tgt_padding_mask = (tgt_input == 0)
+        tgt_output = tgt[:, 1:]
+
+        src_padding_mask = (src == pad_idx).to(device)
+        tgt_padding_mask = (tgt_input == pad_idx).to(device)
         tgt_mask = generate_square_subsequent_mask(tgt_input.size(1)).to(device)
-        
+
         output, _ = model(
             src=src,
             tgt=tgt_input,
             tgt_mask=tgt_mask,
             src_padding_mask=src_padding_mask,
-            tgt_padding_mask=tgt_padding_mask
+            tgt_padding_mask=tgt_padding_mask,
+            memory_key_padding_mask=src_padding_mask  
         )
-        
-        # 计算损失（LabelSmoothingLoss 已忽略 pad_idx）
-        output_flat = output.reshape(-1, output.size(-1))
-        target_flat = target.reshape(-1)
-        loss = criterion(output_flat, target_flat)
-        
-        # 统计非 PAD token 数量
-        ntokens = (target_flat != pad_idx).sum().item()  # 注意：需传入 pad_idx 或从 criterion 获取
-        
+
+        output_flat = output.view(-1, output.size(-1))
+        tgt_flat = tgt_output.reshape(-1)
+
+        loss = criterion(output_flat, tgt_flat)
+        if torch.isnan(loss) or torch.isinf(loss):
+            print("⚠️ Loss is NaN or Inf! Skipping batch.")
+            optimizer.zero_grad()
+            continue
+        ntokens = (tgt_flat != pad_idx).sum().item()
+
         optimizer.zero_grad()
+
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=Config.CLIP_GRAD)  # 使用配置
+        total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), Config.CLIP_GRAD, norm_type=2.0)
+        # 梯度爆炸保护：如果裁剪后的梯度范数仍然过大，跳过更新
+        if total_norm > 10:  # 阈值可根据情况调整
+            print(f"⚠️ 梯度爆炸! Norm={total_norm:.2f}，跳过本轮更新")
+            optimizer.zero_grad()
+            global_step += 1
+            continue
+        # elif total_norm > Config.CLIP_GRAD:
+        #     print(f"⚠️ 梯度裁剪! Norm={total_norm:.2f} (阈值={Config.CLIP_GRAD})")
         optimizer.step()
-        
+
+        global_step += 1
+
         total_loss += loss.item() * ntokens
         total_tokens += ntokens
-        
-        if batch_idx % 100 == 0:
-            print(f"批次 {batch_idx}, 损失: {loss.item():.4f}")
-    
-    return total_loss / total_tokens if total_tokens > 0 else 0
 
-def generate_square_subsequent_mask(sz):
-    """生成因果掩码（防止看到未来信息）"""
-    return torch.triu(torch.full((sz, sz), float('-inf')), diagonal=1)
+    avg_loss = total_loss / total_tokens if total_tokens > 0 else float('inf')
+    return avg_loss , global_step
 
-# def validate(model, dataloader, criterion, device):
-#     """验证"""
-#     model.eval()
-#     total_loss = 0
-#     total_tokens = 0
-    
-#     with torch.no_grad():
-#         for batch in tqdm(dataloader, desc="验证", leave=False):
-#             src = batch['src'].to(device)
-#             tgt = batch['tgt'].to(device)
-#             src_mask = batch['src_mask'].to(device)
-#             tgt_mask = batch['tgt_mask'].to(device)
-            
-#             tgt_input = tgt[:, :-1]
-#             tgt_output = tgt[:, 1:]
-            
-#             output, _ = model(src, tgt_input, src_mask, tgt_mask[:, :, :-1, :-1])
-            
-#             loss = criterion(
-#                 output.contiguous().view(-1, output.size(-1)),
-#                 tgt_output.contiguous().view(-1)
-#             )
-            
-#             batch_tokens = (tgt_output != 0).sum().item()
-#             total_loss += loss.item() * batch_tokens
-#             total_tokens += batch_tokens
-    
-#     return total_loss / total_tokens if total_tokens > 0 else 0
-
-def validate(model, dataloader, criterion, device):
-    """验证 - 与 train_epoch 使用相同的 mask 构造方式"""
+def validate(model, val_loader, criterion, device, pad_idx):
     model.eval()
-    total_loss = 0
-    total_batches = 0
-    
+    total_loss = 0.0
+    total_tokens = 0
+
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="验证", leave=False):
-            src = batch['src'].to(device)  # [B, S]
-            tgt = batch['tgt'].to(device)  # [B, T]
-            
-            tgt_input = tgt[:, :-1]        # [B, T-1]
-            target = tgt[:, 1:]            # [B, T-1]
-            
-            # 构造 masks
-            src_padding_mask = (src == 0)                     # [B, S]
-            tgt_padding_mask = (tgt_input == 0)               # [B, T-1]
-            tgt_mask = generate_square_subsequent_mask(tgt_input.size(1)).to(device)  # [T-1, T-1]
-            
-            # 前向传播
+        for batch in tqdm(val_loader, desc="Validation", leave=False):
+            src = batch['src'].to(device)
+            tgt = batch['tgt'].to(device)
+
+            tgt_input = tgt[:, :-1]
+            tgt_output = tgt[:, 1:]
+
+            src_padding_mask = (src == pad_idx).to(device)
+            tgt_padding_mask = (tgt_input == pad_idx).to(device)
+            tgt_mask = generate_square_subsequent_mask(tgt_input.size(1)).to(device)
+
             output, _ = model(
                 src=src,
                 tgt=tgt_input,
                 tgt_mask=tgt_mask,
                 src_padding_mask=src_padding_mask,
-                tgt_padding_mask=tgt_padding_mask
+                tgt_padding_mask=tgt_padding_mask,
+                memory_key_padding_mask=src_padding_mask
             )
-            
-            # 计算损失
-            loss = criterion(output.reshape(-1, output.size(-1)), target.reshape(-1))
-            total_loss += loss.item()
-            total_batches += 1
-    
-    return total_loss / total_batches if total_batches > 0 else 0
 
-def translate_example(model, sentence, en_vocab, zh_vocab, device, temperature=0.8):
-    """翻译示例"""
-    model.eval()
-    
-    # 编码输入
-    src_indices = en_vocab.encode(sentence, add_special_tokens=True)
-    src = torch.tensor(src_indices).unsqueeze(0).to(device)
-    src_mask = torch.ones(1, 1, 1, len(src_indices)).bool().to(device)
-    
-    # 编码器输出
-    with torch.no_grad():
-        encoder_output = model.encode(src, src_mask)
-        
-        # 初始化目标序列
-        tgt_indices = [zh_vocab.word2idx[Config.SOS_TOKEN]]
-        
-        for i in range(Config.MAX_LENGTH):
-            tgt = torch.tensor(tgt_indices).unsqueeze(0).to(device)
-            
-            # 创建因果掩码
-            tgt_len = len(tgt_indices)
-            tgt_mask = torch.tril(torch.ones(tgt_len, tgt_len)).unsqueeze(0).unsqueeze(0).bool().to(device)
-            tgt_mask = tgt_mask & (tgt != zh_vocab.word2idx[Config.PAD_TOKEN]).unsqueeze(1).unsqueeze(2)
-            
-            # 解码
-            decoder_output, _ = model.decode(tgt, encoder_output, src_mask, tgt_mask)
-            output = model.output_layer(decoder_output)
-            
-            # 应用温度采样
-            output = output / temperature
-            probs = F.softmax(output[0, -1], dim=-1)
-            next_token = torch.multinomial(probs, 1).item()
-            
-            tgt_indices.append(next_token)
-            
-            # 遇到EOS则停止
-            if next_token == zh_vocab.word2idx[Config.EOS_TOKEN]:
-                break
-        
-        # 解码为文本
-        translation = zh_vocab.decode(tgt_indices[1:-1])
-        
-        return translation
+            output_flat = output.view(-1, output.size(-1))
+            tgt_flat = tgt_output.reshape(-1)
+
+            loss = criterion(output_flat, tgt_flat)
+            ntokens = (tgt_flat != pad_idx).sum().item()
+
+            total_loss += loss.item() * ntokens
+            total_tokens += ntokens
+
+    avg_loss = total_loss / total_tokens if total_tokens > 0 else float('inf')
+    return avg_loss
 
 def main():
     """主训练函数"""
-    print("🚀 Transformer翻译模型训练")
+    print("🚀 启动 Transformer 中英翻译训练（SentencePiece 版）")
     Config.display()
     
     # 创建目录
@@ -282,108 +154,106 @@ def main():
     
     # 设备
     device = Config.DEVICE
-    print(f"使用设备: {device}")
+    print(f"🔧 使用设备: {device}")
     
-    # 1. 加载词汇表
-    print("\n🔤 加载词汇表...")
-    en_vocab = Vocabulary.load(f"{Config.VOCAB_DIR}/en_vocab.pkl")
-    zh_vocab = Vocabulary.load(f"{Config.VOCAB_DIR}/zh_vocab.pkl")
-    
-    print(f"英文词汇表: {len(en_vocab)}")
-    print(f"中文词汇表: {len(zh_vocab)}")
-    
-    # 2. 创建数据加载器
-    train_loader, val_loader = create_dataloaders(en_vocab, zh_vocab, Config)
-
-    for batch in train_loader:
-        print(f"src shape: {batch['src'].shape}")  # 应该是 [batch_size, seq_len]
-        print(f"tgt shape: {batch['tgt'].shape}")
-        break    
-
-    # 3. 构建模型
+    # Step 1: 加载数据 + tokenizer
+    print("\n📂 加载数据集和 Tokenizer...")
+    train_loader, val_loader, en_tokenizer, zh_tokenizer = create_dataloaders(Config)
+    print("🔍 Tokenizer 调试:")
+    print(f"  EN PAD: '{en_tokenizer.id_to_piece(Config.PAD_IDX)}' (ID={Config.PAD_IDX})")
+    print(f"  ZH PAD: '{zh_tokenizer.id_to_piece(Config.PAD_IDX)}' (ID={Config.PAD_IDX})")
+    print(f"  EN SOS: '{en_tokenizer.id_to_piece(Config.SOS_IDX)}'")
+    print(f"  ZH EOS: '{zh_tokenizer.id_to_piece(Config.EOS_IDX)}'")    
+    assert zh_tokenizer.id_to_piece(Config.PAD_IDX) == "<pad>", "中文 PAD ID 错误！"
+    Config.init_token_ids(en_tokenizer, zh_tokenizer)
+    # Step 2: 构建模型
     print("\n🏗️  构建模型...")
-    model = build_model(len(en_vocab), len(zh_vocab), device)
-    
-    # 打印模型信息
+    src_vocab_size = en_tokenizer.vocab_size
+    tgt_vocab_size = zh_tokenizer.vocab_size
+    print(f"英文词汇表: {src_vocab_size}")
+    print(f"中文词汇表: {tgt_vocab_size}")
+
+    model = build_model(
+        src_vocab_size=src_vocab_size,
+        tgt_vocab_size=tgt_vocab_size,
+        device=device
+    )
+
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"总参数: {total_params:,}")
-    print(f"可训练参数: {trainable_params:,}")
+    print(f"📊 模型参数: 总 {total_params:,} | 可训练 {trainable_params:,}")
     
-    # 4. 损失函数和优化器
-    # pad_idx = en_vocab.word2idx[Config.PAD_TOKEN]
-    pad_idx = zh_vocab.word2idx[Config.PAD_TOKEN]
+    # Step 3: 损失函数 & 优化器
+    pad_idx = Config.PAD_IDX  
     criterion = LabelSmoothingLoss(
-        len(zh_vocab),
+        tgt_vocab_size,
         padding_idx=pad_idx,
         smoothing=Config.LABEL_SMOOTHING
     )
-    
+
+    # def lr_lambda(current_step: int):
+    #     """Transformer 原版 LR 调度（每步调用）"""
+    #     if current_step == 0:
+    #         return 1e-8
+
+    #     lr = (Config.D_MODEL ** -0.5) * min(
+    #     current_step ** -0.5,
+    #     current_step * (Config.WARMUP_STEPS ** -1.5)
+    #     )
+    #     return min(lr, 0.0004)
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=Config.INIT_LR,
+        lr=Config.INIT_LR,  
         betas=(0.9, 0.98),
         eps=1e-9,
         weight_decay=Config.WEIGHT_DECAY
     )
-    
-    # 学习率调度器
-    if Config.LR_SCHEDULER == "cosine":
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, T_0=Config.T_MAX, T_mult=2
-        )
-    else:
-        def lr_lambda(step):
-            if step < Config.WARMUP_STEPS:
-                return float(step) / float(max(1, Config.WARMUP_STEPS))
-            else:
-                progress = (step - Config.WARMUP_STEPS) / (Config.EPOCHS * len(train_loader) - Config.WARMUP_STEPS)
-                return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
-        
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    
-    # 5. TensorBoard
+
+    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    # Step 5. TensorBoard````````````````````
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     writer = SummaryWriter(f"{Config.LOG_DIR}/{timestamp}")
     
-    # 6. 早停
+    # Step 6. 早停
     early_stopping = EarlyStopping(
         patience=Config.PATIENCE,
-        min_delta=Config.MIN_DELTA
+        min_delta=Config.MIN_DELTA,
+        verbose=True
     )
     
-    # 7. 训练循环
+    # Step 7. 训练循环
     print("\n🔥 开始训练...")
     best_val_loss = float('inf')
+    global_step = 0
+    print("✅ Starting training with global_step = 0")   
     
     for epoch in range(1, Config.EPOCHS + 1):
-        print(f"\n{'='*50}")
-        print(f"Epoch {epoch}/{Config.EPOCHS}")
-        print(f"{'='*50}")
+        print(f"\n📅 开始第 {epoch}/{Config.EPOCHS} 轮训练")
         
         start_time = time.time()
         
-        # 训练
-        train_loss = train_epoch(model, train_loader, criterion, optimizer, device, epoch, pad_idx)
-        
+        # ✅ 调用 train_epoch 时传入 scheduler，并接收 lr
+        train_loss, global_step  = train_epoch(
+            model, train_loader, criterion, optimizer, device, epoch, pad_idx,global_step 
+        )        
+                
         # 验证
-        val_loss = validate(model, val_loader, criterion, device)
-        
-        # 学习率调度
-        scheduler.step()
-        
+        val_loss = validate(model, val_loader, criterion, device, pad_idx)        
+        current_lr = optimizer.param_groups[0]['lr']
         epoch_time = time.time() - start_time
         
         # 记录到TensorBoard
         writer.add_scalar('Loss/train', train_loss, epoch)
         writer.add_scalar('Loss/val', val_loss, epoch)
-        writer.add_scalar('LR', optimizer.param_groups[0]['lr'], epoch)
+        writer.add_scalar('LR', current_lr, epoch)
         
         # 打印结果
         print(f"\n📊 Epoch {epoch} 结果:")
         print(f"  训练损失: {train_loss:.4f}")
         print(f"  验证损失: {val_loss:.4f}")
-        print(f"  学习率: {optimizer.param_groups[0]['lr']:.6f}")
+        print(f"  学习率: {current_lr:.8f}")
         print(f"  时间: {epoch_time:.1f}秒")
         
         # 保存检查点
@@ -392,7 +262,7 @@ def main():
             best_val_loss = val_loss
             print(f"  🎯 新的最佳验证损失!")
         
-        if epoch % 5 == 0 or is_best:
+        if is_best:
             # 构建可序列化的配置
             config_save = {
                 k: v for k, v in Config.__dict__.items()
@@ -404,39 +274,17 @@ def main():
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
+                # 'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': train_loss,
                 'val_loss': val_loss,
                 'best_val_loss': best_val_loss,
-                # 'en_vocab': en_vocab,
-                # 'zh_vocab': zh_vocab,
                 'config': config_save
             }
             
             if is_best:
                 torch.save(checkpoint, f"{Config.CHECKPOINT_DIR}/best_model.pth")
                 print(f"  💾 保存最佳模型")
-            
-            if epoch % 20 == 0:
-                torch.save(checkpoint, f"{Config.CHECKPOINT_DIR}/checkpoint_epoch_{epoch}.pth")
-                print(f"  💾 保存检查点")
         
-        # 每5轮显示翻译示例
-        # if epoch % 5 == 0:
-        #     print(f"\n🔍 翻译示例:")
-        #     test_sentences = [
-        #         "A dog is running in the park.",
-        #         "Two people are building a snow house.",
-        #         "A woman is cooking in the kitchen."
-        #     ]
-            
-        #     for sentence in test_sentences:
-        #         try:
-        #             translation = translate_example(model, sentence, en_vocab, zh_vocab, device)
-        #             print(f"  '{sentence}'")
-        #             print(f"  -> '{translation}'")
-        #         except Exception as e:
-        #             print(f"  翻译失败: {e}")
         
         # 早停检查
         if early_stopping(val_loss):
