@@ -1,0 +1,10 @@
+torch>=2.0.0
+torchvision
+torchaudio
+tensorboard
+tqdm
+numpy
+pandas
+scikit-learn
+jieba
+sentencepiece

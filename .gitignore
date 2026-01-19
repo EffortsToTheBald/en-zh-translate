@@ -1,0 +1,12 @@
+# 临时文件
+*.tmp
+*.temp
+tmp/
+temp/
+
+# data
+data/
+
+results_new/
+logs_new/
+venv/
