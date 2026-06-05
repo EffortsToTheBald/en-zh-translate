@@ -7,8 +7,21 @@ const Translator = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+
+  // const getBackendUrl = () => {
+  //   if (typeof window !== 'undefined' && window.APP_CONFIG?.backend) {
+  //     const { serviceName, namespace, port } = window.APP_CONFIG.backend;
+  //     // Kubernetes Service DNS
+  //     return `http://${serviceName}.${namespace}.svc.cluster.local:${port}`;
+  //   }
+  //   // 开发 fallback（可选）
+  //   return 'http://192.168.1.19:8000';
+  // };
+  //  const API_URL = `${getBackendUrl()}/translate`;
+ 
+
   // 后端 API 地址（开发时）
-  const API_URL = 'http://192.168.1.19:8000/translate';
+  var API_URL = "/api/translate";
 
   const handleTranslate = async () => {
     // 清空上一次结果和错误
@@ -24,6 +37,7 @@ const Translator = () => {
     setLoading(true);
 
     try {
+      console.log("API_URL",API_URL)
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: {

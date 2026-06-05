@@ -282,7 +282,7 @@ def main():
             }
             
             if is_best:
-                torch.save(checkpoint, f"{Config.CHECKPOINT_DIR}/best_model.pth")
+                # torch.save(checkpoint, f"{Config.CHECKPOINT_DIR}/best_model_test.pth")
                 print(f"  💾 保存最佳模型")
         
         

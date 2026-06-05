@@ -23,7 +23,7 @@ def generate_square_subsequent_mask(sz: int) -> torch.Tensor:
 class EN2ZHTranslator:
     def __init__(self, model_path=None):
         if model_path is None:
-            model_path = os.path.join(Config.CHECKPOINT_DIR, "best_model.pth")
+            model_path = os.path.join(Config.MODEL_DIR, "best_model.pth")
         
         print(f"🔄 正在加载模型: {model_path}")
         self.device = torch.device(Config.DEVICE)
@@ -31,8 +31,8 @@ class EN2ZHTranslator:
         # --- 1. 加载 SentencePiece Tokenizers ---
         self.en_sp = spm.SentencePieceProcessor()
         self.zh_sp = spm.SentencePieceProcessor()
-        en_model_path = os.path.join(Config.VOCAB_DIR, "en.model")
-        zh_model_path = os.path.join(Config.VOCAB_DIR, "ch.model")
+        en_model_path = os.path.join(Config.VAL_DIR, "en.model")
+        zh_model_path = os.path.join(Config.VAL_DIR, "ch.model")
         self.en_sp.load(en_model_path)
         self.zh_sp.load(zh_model_path)
 

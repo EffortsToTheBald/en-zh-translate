@@ -1,0 +1,59 @@
+# 新建nvidia-device-plugin-ds.yaml（修正版）
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-device-plugin-daemonset
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      name: nvidia-device-plugin-ds
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        name: nvidia-device-plugin-ds
+    spec:
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      # 关键：添加节点亲和性，只调度到有GPU的节点（WSL2节点）
+      containers:
+      - image: nvcr.io/nvidia/k8s-device-plugin:v0.15.0  # 通用版，适配Ubuntu 24.04
+        name: nvidia-device-plugin-ctr
+        securityContext:
+          privileged: true
+        # 关键：修正可执行文件路径（新版插件路径）
+        command: ["/usr/bin/nvidia-device-plugin"]
+        volumeMounts:
+        - name: device-plugin
+          mountPath: /var/lib/kubelet/device-plugins
+        - name: wsl-nvidia-libs
+          mountPath: /usr/lib/wsl/lib
+          readOnly: true
+        - name: host-nvidia-libs
+          mountPath: /usr/lib/x86_64-linux-gnu
+          readOnly: true
+        env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: compute,utility
+        # 可选：开启调试日志，便于排查
+        - name: LOG_LEVEL
+          value: "debug"
+      volumes:
+      - name: device-plugin
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+          type: DirectoryOrCreate
+      - name: wsl-nvidia-libs
+        hostPath:
+          path: /usr/lib/wsl/lib
+          type: Directory
+      - name: host-nvidia-libs
+        hostPath:
+          path: /usr/lib/x86_64-linux-gnu
+          type: Directory

@@ -11,7 +11,7 @@ class Config:
     VAL_ZH_FILE = "data/val.zh"
     
     # 词汇表路径
-    VOCAB_DIR = "vocab"
+    VOCAB_DIR = "vocab_test"
     
     # 模型参数
     D_MODEL = 512
@@ -23,7 +23,7 @@ class Config:
     
     # 训练参数
     BATCH_SIZE = 64
-    EPOCHS = 80
+    EPOCHS = 1 #80
     INIT_LR = 0.00001
     MAX_LR = 0.0003
     WARMUP_STEPS = 3000 # 总步数 ≈ 100 * 480 = 48,000 → 5% 是 2400，但小数据集可更激进（1000 足够）
@@ -57,7 +57,8 @@ class Config:
     CHECKPOINT_DIR = "checkpoints_new"
     LOG_DIR = "logs_new"
     RESULTS_DIR = "results_new"
-    
+    MODEL_DIR = "model-ga/model"
+    VAL_DIR = "model-ga/val"
     # 设备
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     NUM_WORKERS = 4

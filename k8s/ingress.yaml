@@ -1,0 +1,17 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: translate-ingress
+  namespace: translate-app
+spec:
+  rules:
+  - host: translate.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-gateway-svc  # ← 所有流量先到 Gateway
+            port:
+              number: 80

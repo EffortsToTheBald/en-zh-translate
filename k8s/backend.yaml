@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: translate-backend
+  namespace: translate-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: translate-backend
+  template:
+    metadata:
+      labels:
+        app: translate-backend
+    spec:
+      containers:
+      - name: backend
+        image: backend-app:9
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: checkpoints
+          mountPath: /app/checkpoints_new
+          readOnly: true
+        - name: vocab
+          mountPath: /app/vocab
+          readOnly: true
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+      volumes:
+      - name: checkpoints
+        hostPath:
+          path: /home/tdohs/project/translate-transformer/en-zh-translate/model-ga/model
+      - name: vocab
+        hostPath:
+          path: /home/tdohs/project/translate-transformer/en-zh-translate/model-ga/val
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: translate-backend-svc   # serviceName
+  namespace: translate-app      # namespace
+spec:
+  type: ClusterIP               
+  selector:
+    app: translate-backend
+  ports:
+    - protocol: TCP
+      port: 8000          
+      targetPort: 8000

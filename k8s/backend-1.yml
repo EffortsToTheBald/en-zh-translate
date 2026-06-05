@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: translate-backend
+  namespace: translate-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: translate-backend
+  template:
+    metadata:
+      labels:
+        app: translate-backend
+    spec: 
+      hostPID: true                     # 保留（某些应用可能需要）
+      hostIPC: true                     # 保留
+      
+      containers:
+      - name: backend
+        image: backend-app:9
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8000
+        
+        securityContext:
+          privileged: true              # 必须！允许访问 /dev/dxg 等设备
+        
+        env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"                  # 让容器看到所有 GPU（WSL2 通常只有一张）
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: "compute,utility,video"      # 启用计算和工具能力
+        - name: LD_LIBRARY_PATH
+          value: "/usr/lib/wsl/lib:/usr/local/lib:/usr/lib"  # 包含 WSL stub 路径
+        # - name: LD_PRELOAD
+        #   value: "/usr/lib/wsl/lib/libcuda.so.1" 
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"   
+        volumeMounts:
+        - name: checkpoints
+          mountPath: /app/checkpoints_new
+          # readOnly: true
+        - name: vocab
+          mountPath: /app/vocab
+          # readOnly: true
+        - name: dxg-device
+          mountPath: /dev/dxg
+          readOnly: false               # 建议 false（读写），WSL2 下 dxg 需要可写
+        - name: wsl-nvidia-libs
+          mountPath: /usr/lib/wsl/lib
+          readOnly: true
+        - name: wsl-full
+          mountPath: /usr/lib/wsl
+          readOnly: true        
+        - name: wsl-nvidia-drivers  # 新增，确保 drivers 可见
+          mountPath: /usr/lib/wsl/drivers
+          readOnly: true
+        
+      volumes:
+      - name: dxg-device
+        hostPath:
+          path: /dev/dxg
+          # type: CharDevice  # 可选加，但 WSL2 下 /dev/dxg 是特殊设备，type 可能不严格需要
+      - name: wsl-nvidia-libs
+        hostPath:
+          path: /usr/lib/wsl/lib
+          type: Directory
+      - name: checkpoints
+        hostPath:
+          path: /home/tdohs/project/translate-transformer/en-zh-translate/model-ga/model
+      - name: vocab
+        hostPath:
+          path: /home/tdohs/project/translate-transformer/en-zh-translate/model-ga/val
+      - name: wsl-full
+        hostPath:
+          path: /usr/lib/wsl
+          type: Directory      
+      - name: wsl-nvidia-drivers  # 新增
+        hostPath:
+          path: /usr/lib/wsl/drivers
+          type: Directory
+---
+# Service 保持不变
+apiVersion: v1
+kind: Service
+metadata:
+  name: translate-backend-svc
+  namespace: translate-app
+spec:
+  type: ClusterIP
+  selector:
+    app: translate-backend
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000

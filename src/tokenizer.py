@@ -27,7 +27,6 @@ class SentencePieceTokenizer:
         else:
             return self.sp.decode_pieces(tokens)
 
-    # 👇 必须添加这两个方法用于调试和动态获取特殊 token ID
     def id_to_piece(self, idx):
         return self.sp.id_to_piece(idx)
 
@@ -63,24 +62,32 @@ def train_sentencepiece_tokenizers(
 ):
     """
     训练英文和中文的 SentencePiece 模型
+        en_corpus:  data/train.en
+        zh_corpus:  data/train.zh
+        output_dir: vocab_test
     """
     os.makedirs(output_dir, exist_ok=True)
     
     # 训练英文 (BPE)
     spm.SentencePieceTrainer.train(
         input=en_corpus,
-        model_prefix=os.path.join(output_dir, "en"),
+        model_prefix=os.path.join(output_dir, "en_test"),
         vocab_size=vocab_size_en,
         model_type="bpe",
         character_coverage=1.0,
         pad_id=3, unk_id=2, bos_id=1, eos_id=0,
         user_defined_symbols=["<pad>", "<s>", "</s>"]
     )
-    
+    # BPE
+    # 从字符开始，贪心地合并最常见相邻对。
+    # 合并后的单元成为新“字符”，参与下一轮统计。
+    # 最终词表大小由你设定（如 32000），达到即停止。
+    # 共享子结构提升泛化能力    
+
     # 训练中文 (BPE)
     spm.SentencePieceTrainer.train(
         input=zh_corpus,
-        model_prefix=os.path.join(output_dir, "ch"),
+        model_prefix=os.path.join(output_dir, "ch_test"),
         vocab_size=vocab_size_zh,
         model_type="bpe",
         character_coverage=1.0,
@@ -88,5 +95,5 @@ def train_sentencepiece_tokenizers(
         user_defined_symbols=["<pad>", "<s>", "</s>"]
     )
     
-    print(f"✅ 英文 tokenizer 保存至: {output_dir}/en.model")
-    print(f"✅ 中文 tokenizer 保存至: {output_dir}/ch.model")
+    print(f"✅ 英文 tokenizer 保存至: {output_dir}/en_test.model")
+    print(f"✅ 中文 tokenizer 保存至: {output_dir}/ch_test.model")
